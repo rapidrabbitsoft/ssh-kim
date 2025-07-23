@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="120px" height="120px" viewBox="0 0 120 120" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+    <title>Frame</title>
+    <defs>
+        <path d="M25,0 L95,0 C108.807119,-3.55271368e-15 120,11.1928813 120,25 L120,95 C120,108.807119 108.807119,120 95,120 L25,120 C11.1928813,120 0,108.807119 0,95 L0,25 C0,11.1928813 11.1928813,0 25,0 Z" id="path-1"></path>
+    </defs>
+    <g id="Frame" stroke="none" fill="none" xlink:href="#path-1" fill-rule="evenodd">
+        <use fill="#FFFFFF" xlink:href="#path-1"></use>
+        <g id="Group" stroke-width="1" transform="translate(7, 7)">
+            <g id="Graphic" transform="translate(21, 21)" stroke="#677BE7" stroke-linecap="round" stroke-linejoin="round">
+                <g id="Group" transform="translate(5.3333, 5.3333)">
+                    <path d="M36,14.6666667 L42.1333333,20.8 C43.1702494,21.816381 44.8297506,21.816381 45.8666667,20.8 L51.4666667,15.2 C52.4830477,14.163084 52.4830477,12.5035827 51.4666667,11.4666667 L45.3333333,5.33333333" id="Path" stroke-width="5.33333333"></path>
+                    <line x1="50.6666667" y1="0" x2="25.0666667" y2="25.6" id="Path" stroke-width="5.33333333"></line>
+                    <circle id="Oval" stroke-width="5.33333333" cx="14.6666667" cy="36" r="14.6666667"></circle>
+                </g>
+            </g>
+            <circle id="Oval-2" stroke="#6D67C9" stroke-width="5" cx="53" cy="53" r="50.5"></circle>
+        </g>
+    </g>
+</svg> 
