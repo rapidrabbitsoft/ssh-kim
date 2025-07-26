@@ -1,14 +1,19 @@
 {
-  "name": "ssh-kim",
+  "name": "ssh-kim-app",
   "private": true,
   "version": "0.1.0",
-  "description": "Cross-platform SSH Key Manager built with Tauri and React",
+  "description": "Cross-platform SSH Key Manager",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "clean": "cd src-tauri && cargo clean",
+    "build:prod": "npm run build && tauri build",
+    "build:prod:mac": "npm run build && tauri build --target aarch64-apple-darwin",
+    "build:prod:win": "npm run build && tauri build --target x86_64-pc-windows-msvc",
+    "build:prod:linux": "npm run build && tauri build --target x86_64-unknown-linux-gnu"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.7.0",

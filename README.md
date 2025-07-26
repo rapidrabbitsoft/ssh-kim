@@ -1,6 +1,18 @@
-# SSH Key Inspection Manager (ssh-kim)
+# SSH Key Manager (ssh-kim)
 
 A cross-platform desktop application for managing SSH keys with a modern, intuitive interface. Built with Tauri and React.
+
+## 🔐 Key Features
+
+- **🔑 SSH Key Management**: Add, edit, delete, and organize SSH keys
+- **🔒 Secure Storage**: AES-256 encrypted local storage
+- **📤 Export/Import**: Password-protected key file sharing across machines
+- **🔍 Auto-detection**: Scan common SSH key locations automatically
+- **🏷️ Tagging System**: Organize keys with custom tags
+- **🔎 Search & Filter**: Find keys by name, tag, or type
+- **📋 Copy to Clipboard**: Easy key copying functionality
+- **🎨 Modern UI**: Clean, responsive interface with beautiful design
+- **📦 Single Executable**: Packaged as a single clickable app icon
 
 ## 🚀 Quick Start
 
@@ -16,13 +28,18 @@ npm install
 npm run tauri dev
 
 # Build for production
-npm run tauri build
+npm run build:prod
+
+# Clean build artifacts
+npm run clean
 ```
 
 ## ✨ Features
 
 - **🔧 Cross-platform**: Works on Windows, macOS, and Linux
 - **🔑 Key Management**: Add, edit, and delete SSH keys
+- **🔒 Secure Storage**: AES-256 encrypted local storage with machine-specific keys
+- **📤 Export/Import**: Password-protected key file sharing across machines
 - **🔍 Auto-detection**: Automatically scans common SSH key locations
 - **📝 Key Types**: Supports RSA, DSA, ECDSA, and Ed25519 keys
 - **🔎 Search & Filter**: Find keys by name, tag, or type
@@ -65,7 +82,16 @@ npm run tauri build
 ### Building for Production
 
 ```bash
-npm run tauri build
+# Build for current platform
+npm run build:prod
+
+# Build for specific platforms
+npm run build:prod:mac    # macOS (Apple Silicon)
+npm run build:prod:win    # Windows
+npm run build:prod:linux  # Linux
+
+# Clean build artifacts
+npm run clean
 ```
 
 This will create platform-specific executables in the `src-tauri/target/release/bundle/` directory.
@@ -77,6 +103,12 @@ This will create platform-specific executables in the `src-tauri/target/release/
 1. **Manual Entry**: Paste your SSH public key content directly
 2. **Scan Locations**: Automatically detect keys from common SSH directories
 3. **File Import**: Select specific key files from your system
+
+### Exporting and Importing Keys
+
+1. **Export**: Create password-protected key files for sharing across machines
+2. **Import**: Import password-protected key files with automatic duplicate detection
+3. **Cross-platform**: Share keys securely between different operating systems
 
 ### Managing Keys
 
@@ -94,11 +126,13 @@ This will create platform-specific executables in the `src-tauri/target/release/
 
 ## Data Storage
 
-SSH keys are stored in a JSON file located in the application's data directory:
+SSH Kim stores your SSH keys in an encrypted file located at `${home}/.ssh-kim/keys.enc` by default. The file uses AES-256 encryption with machine-specific keys for local storage.
 
-- **macOS**: `~/.ssh-kim/ssh_keys.json`
-- **Windows**: `%USERPROFILE%/.ssh-kim/ssh_keys.json`
-- **Linux**: `~/.ssh-kim/ssh_keys.json`
+### Encryption System
+
+- **Local Storage**: Machine-specific encryption (automatically derived from machine ID)
+- **Export/Import**: Password-based encryption for secure cross-machine sharing
+- **Security**: No hardcoded encryption keys, all keys are derived securely
 
 ### JSON Structure
 
@@ -156,27 +190,48 @@ ssh-kim/
 
 ```bash
 # Build for current platform
-npm run tauri build
+npm run build:prod
 
-# Build for specific platform
-npm run tauri build -- --target x86_64-unknown-linux-gnu
-npm run tauri build -- --target x86_64-pc-windows-msvc
-npm run tauri build -- --target x86_64-apple-darwin
+# Build for specific platforms
+npm run build:prod:mac    # macOS (Apple Silicon)
+npm run build:prod:win    # Windows
+npm run build:prod:linux  # Linux
 ```
 
 ## Security
 
-- SSH keys are stored locally on your machine
-- No data is transmitted to external servers
-- Keys are stored in plain text (as they are public keys)
-- Application has minimal system permissions
+- **Local Storage**: SSH keys are stored locally on your machine
+- **No Network**: No data is transmitted to external servers
+- **Encrypted Storage**: Keys are encrypted using AES-256 encryption
+- **Machine-Specific**: Local files use machine-specific encryption keys
+- **Password Protection**: Export/import files use user-provided passwords
+- **Minimal Permissions**: Application has minimal system permissions
+- **Public Keys Only**: Only SSH public keys are stored (private keys should never be imported)
+
+## Testing
+
+A comprehensive test suite is included in `tests.js` that covers all major functionality:
+
+```bash
+# Run tests in browser console when app is running
+# Open the app and press F12 to open developer tools
+# Copy and paste test functions from tests.js
+
+# Available test functions:
+# - testCoreCommands() - Test basic functionality
+# - testExportImportFunctionality() - Test file export/import
+# - testPasswordProtectedExportImport() - Test password-protected export/import
+# - testFileDialogs() - Test file dialogs
+# - testKeyManagement() - Test key CRUD operations
+# - runAllTests() - Run all tests
+```
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Test thoroughly
+4. Test thoroughly using the provided test suite
 5. Submit a pull request
 
 ## License

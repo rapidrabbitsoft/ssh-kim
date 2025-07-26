@@ -14,12 +14,99 @@ use aes::cipher::{
 use base64::{Engine as _, engine::general_purpose};
 use rand::Rng;
 use once_cell::sync::Lazy;
+use rfd::FileDialog;
+use sha2::{Sha256, Digest};
+use serde::Serialize;
 
-// Encryption key (in a real app, this would be derived from user input or secure storage)
-const ENCRYPTION_KEY: &[u8; 32] = b"ssh-kim-encryption-key-32bytes!!";
+#[derive(Serialize)]
+pub struct ImportResult {
+    pub keys: Vec<SshKey>,
+    pub imported_count: usize,
+    pub duplicate_count: usize,
+    pub total_in_store: usize,
+}
+
+
+// Machine-specific encryption key (derived from machine ID)
+static MACHINE_KEY: Lazy<[u8; 32]> = Lazy::new(|| {
+    let machine_id = get_machine_id();
+    let mut hasher = Sha256::new();
+    hasher.update(machine_id.as_bytes());
+    hasher.update(b"ssh-kim-machine-key");
+    let result = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&result);
+    key
+});
+
+// Password-based encryption key (when user sets a password)
+static PASSWORD_KEY: Lazy<Mutex<Option<[u8; 32]>>> = Lazy::new(|| Mutex::new(None));
+
+// Get a unique machine identifier
+fn get_machine_id() -> String {
+    // Try to get hostname first
+    if let Ok(hostname) = env::var("HOSTNAME") {
+        return hostname;
+    }
+    
+    // Fallback to computer name on macOS
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("scutil")
+            .arg("--get")
+            .arg("ComputerName")
+            .output() {
+            if let Ok(name) = String::from_utf8(output.stdout) {
+                return name.trim().to_string();
+            }
+        }
+    }
+    
+    // Final fallback
+    "unknown-machine".to_string()
+}
+
+// Derive encryption key from password
+fn derive_key_from_password(password: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    hasher.update(b"ssh-kim-password-salt");
+    let result = hasher.finalize();
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&result);
+    key
+}
+
+// Get the machine-specific encryption key (for local files)
+fn get_encryption_key() -> [u8; 32] {
+    *MACHINE_KEY
+}
+
+// Get password-based encryption key (for export/import)
+fn get_password_encryption_key(password: &str) -> [u8; 32] {
+    derive_key_from_password(password)
+}
+
+// Set password-based encryption key
+fn set_password_key(password: &str) {
+    let key = derive_key_from_password(password);
+    if let Ok(mut password_key) = PASSWORD_KEY.lock() {
+        *password_key = Some(key);
+    }
+}
+
+// Clear password-based encryption key (fall back to machine-specific)
+fn clear_password_key() {
+    if let Ok(mut password_key) = PASSWORD_KEY.lock() {
+        *password_key = None;
+    }
+}
 
 // In-memory cache for SSH keys
 static KEYS_CACHE: Lazy<Mutex<Option<Vec<SshKey>>>> = Lazy::new(|| Mutex::new(None));
+
+// Global state for custom file path
+static CUSTOM_FILE_PATH: Lazy<Mutex<Option<PathBuf>>> = Lazy::new(|| Mutex::new(None));
 
 // Get keys from cache or load from file
 fn get_cached_keys() -> Result<Vec<SshKey>, String> {
@@ -54,33 +141,36 @@ fn clear_cache() {
 
 // Get the path to the encrypted SSH keys file
 fn get_keys_file_path() -> Result<PathBuf, String> {
-    let app_data_dir = get_app_data_dir()?;
-    Ok(app_data_dir.join("ssh_keys.enc"))
+    // Check if custom path is set
+    let custom_path = CUSTOM_FILE_PATH.lock().unwrap();
+    if let Some(path) = &*custom_path {
+        return Ok(path.clone());
+    }
+    
+    // Default to user's home directory
+    let home_dir = get_home_dir()?;
+    let ssh_kim_dir = home_dir.join(".ssh-kim");
+    
+    // Create .ssh-kim directory if it doesn't exist
+    if !ssh_kim_dir.exists() {
+        fs::create_dir_all(&ssh_kim_dir)
+            .map_err(|e| format!("Failed to create .ssh-kim directory: {}", e))?;
+    }
+    
+    Ok(ssh_kim_dir.join("keys.enc"))
 }
 
-// Get application data directory (now portable within app directory)
-fn get_app_data_dir() -> Result<PathBuf, String> {
-    // Get the current executable's directory
-    let current_exe = std::env::current_exe()
-        .map_err(|e| format!("Failed to get current executable path: {}", e))?;
-    
-    let app_dir = current_exe.parent()
-        .ok_or("Failed to get app directory")?;
-    
-    // Create a data directory within the app directory
-    let app_data_dir = app_dir.join("data");
-    
-    if !app_data_dir.exists() {
-        fs::create_dir_all(&app_data_dir)
-            .map_err(|e| format!("Failed to create app data directory: {}", e))?;
-    }
-
-    Ok(app_data_dir)
+// Get user's home directory
+fn get_home_dir() -> Result<PathBuf, String> {
+    env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .map_err(|_| "Failed to get home directory".to_string())
 }
 
 // Encrypt data
 fn encrypt_data(data: &str) -> Result<String, String> {
-    let cipher = Aes256::new_from_slice(ENCRYPTION_KEY)
+    let cipher = Aes256::new_from_slice(&get_encryption_key())
         .map_err(|e| format!("Failed to create cipher: {}", e))?;
     
     let mut rng = rand::thread_rng();
@@ -105,7 +195,7 @@ fn encrypt_data(data: &str) -> Result<String, String> {
 
 // Decrypt data
 fn decrypt_data(encrypted_data: &str) -> Result<String, String> {
-    let cipher = Aes256::new_from_slice(ENCRYPTION_KEY)
+    let cipher = Aes256::new_from_slice(&get_encryption_key())
         .map_err(|e| format!("Failed to create cipher: {}", e))?;
     
     let encrypted_bytes = general_purpose::STANDARD.decode(encrypted_data)
@@ -435,4 +525,405 @@ pub fn force_reload_keys() -> Result<Vec<SshKey>, String> {
 pub fn get_keys_file_location() -> Result<String, String> {
     let path = get_keys_file_path()?;
     Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn set_custom_keys_file_path(file_path: String) -> Result<(), String> {
+    let path = PathBuf::from(file_path);
+    
+    // Validate the path
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            return Err("Parent directory does not exist".to_string());
+        }
+    }
+    
+    // Set the custom path
+    let mut custom_path = CUSTOM_FILE_PATH.lock().unwrap();
+    *custom_path = Some(path);
+    
+    // Clear cache to force reload from new location
+    clear_cache();
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn load_keys_from_file(file_path: String) -> Result<Vec<SshKey>, String> {
+    println!("🔍 load_keys_from_file: Starting with file_path: {}", file_path);
+    let path = PathBuf::from(&file_path);
+    println!("🔍 load_keys_from_file: Converted to PathBuf: {:?}", path);
+    
+    // Validate file exists
+    if !path.exists() {
+        println!("❌ load_keys_from_file: File does not exist: {}", file_path);
+        return Err("File does not exist".to_string());
+    }
+    println!("✅ load_keys_from_file: File exists");
+    
+    // Check if it's a file (not a directory)
+    if !path.is_file() {
+        println!("❌ load_keys_from_file: Path is not a file: {}", file_path);
+        return Err("Path is not a file".to_string());
+    }
+    println!("✅ load_keys_from_file: Path is a file");
+    
+    // Read and decrypt the file
+    println!("🔍 load_keys_from_file: Reading file content...");
+    let encrypted_content = fs::read_to_string(&path)
+        .map_err(|e| {
+            println!("❌ load_keys_from_file: Failed to read file {}: {}", file_path, e);
+            format!("Failed to read file: {}", e)
+        })?;
+    println!("✅ load_keys_from_file: Successfully read file, content length: {}", encrypted_content.len());
+    
+    println!("🔍 load_keys_from_file: Attempting to decrypt...");
+    let decrypted_content = decrypt_data(&encrypted_content)
+        .map_err(|e| {
+            println!("❌ load_keys_from_file: Failed to decrypt file {}: {}", file_path, e);
+            format!("Failed to decrypt: {}", e)
+        })?;
+    println!("✅ load_keys_from_file: Successfully decrypted file, content length: {}", decrypted_content.len());
+    
+    println!("🔍 load_keys_from_file: Parsing JSON...");
+    let keys: Vec<SshKey> = serde_json::from_str(&decrypted_content)
+        .map_err(|e| {
+            println!("❌ load_keys_from_file: Failed to parse JSON from file {}: {}", file_path, e);
+            format!("Failed to parse keys file: {}", e)
+        })?;
+    println!("✅ load_keys_from_file: Successfully parsed {} keys from file", keys.len());
+    
+    // Set this as the current custom path
+    println!("🔍 load_keys_from_file: Setting custom path...");
+    let mut custom_path = CUSTOM_FILE_PATH.lock().unwrap();
+    *custom_path = Some(path);
+    println!("✅ load_keys_from_file: Set custom path");
+    
+    // Update cache with loaded keys
+    println!("🔍 load_keys_from_file: Updating cache...");
+    let mut cache = KEYS_CACHE.lock().unwrap();
+    *cache = Some(keys.clone());
+    println!("✅ load_keys_from_file: Updated cache");
+    
+    println!("🎉 load_keys_from_file: Function completed successfully");
+    Ok(keys)
+}
+
+#[tauri::command]
+pub fn reset_to_default_path() -> Result<(), String> {
+    // Clear custom path
+    let mut custom_path = CUSTOM_FILE_PATH.lock().unwrap();
+    *custom_path = None;
+    
+    // Clear cache to force reload from default location
+    clear_cache();
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_current_file_path() -> Result<String, String> {
+    let path = get_keys_file_path()?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn create_new_keys_file() -> Result<(), String> {
+    // Create an empty keys array and save it
+    let empty_keys: Vec<SshKey> = Vec::new();
+    save_keys(&empty_keys)?;
+    
+    // Clear cache to force reload
+    clear_cache();
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_keys_to_file(file_path: String) -> Result<(), String> {
+    println!("Exporting keys to file: {}", file_path);
+    let path = PathBuf::from(&file_path);
+    
+    // Get current keys
+    let keys = get_cached_keys()?;
+    println!("Exporting {} keys to {}", keys.len(), file_path);
+    
+    // Create parent directory if it doesn't exist
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+    
+    // Save keys to the specified location
+    let content = serde_json::to_string_pretty(&keys)
+        .map_err(|e| format!("Failed to serialize keys: {}", e))?;
+    
+    let encrypted_content = encrypt_data(&content)?;
+    
+    fs::write(&path, encrypted_content)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    
+    println!("Successfully exported keys to {}", file_path);
+    Ok(())
+} 
+
+#[tauri::command]
+pub fn open_file_dialog() -> Option<String> {
+    FileDialog::new()
+        .add_filter("SSH Kim Files", &["enc"])
+        .add_filter("All Files", &["*"])
+        .set_title("Select SSH Kim File")
+        .pick_file()
+        .map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn open_save_dialog() -> Option<String> {
+    FileDialog::new()
+        .add_filter("SSH Kim Files", &["enc"])
+        .add_filter("All Files", &["*"])
+        .set_title("Save SSH Kim File")
+        .set_file_name("ssh_kim_keys.enc")
+        .save_file()
+        .map(|path| path.to_string_lossy().to_string())
+} 
+
+#[tauri::command]
+pub fn merge_keys_from_file(source_file_path: String) -> Result<Vec<SshKey>, String> {
+    println!("🔍 merge_keys_from_file: Starting merge from source file: {}", source_file_path);
+    
+    // Try to load keys from the source file with current encryption
+    let source_keys = match load_keys_from_file(source_file_path.clone()) {
+        Ok(keys) => {
+            println!("🔍 merge_keys_from_file: Successfully loaded {} keys with current encryption", keys.len());
+            keys
+        }
+        Err(e) => {
+            // If current encryption fails, try with machine-specific encryption
+            println!("🔍 merge_keys_from_file: Current encryption failed, trying machine-specific: {}", e);
+            
+            // Temporarily clear password key to use machine-specific encryption
+            clear_password_key();
+            
+            match load_keys_from_file(source_file_path.clone()) {
+                Ok(keys) => {
+                    println!("🔍 merge_keys_from_file: Successfully loaded {} keys with machine-specific encryption", keys.len());
+                    keys
+                }
+                Err(e2) => {
+                    println!("🔍 merge_keys_from_file: Machine-specific encryption also failed: {}", e2);
+                    return Err(format!("Failed to decrypt file. The file may be password-protected or corrupted. Try using 'Import with Password Protection' instead."));
+                }
+            }
+        }
+    };
+    
+    // Get current keys
+    let current_keys = get_cached_keys()?;
+    println!("🔍 merge_keys_from_file: Current keys count: {}", current_keys.len());
+    
+    // Create a set of existing key IDs to avoid duplicates
+    let existing_ids: std::collections::HashSet<String> = current_keys.iter()
+        .map(|key| key.id.clone())
+        .collect();
+    
+    // Filter out duplicates from source keys
+    let new_keys: Vec<SshKey> = source_keys.into_iter()
+        .filter(|key| !existing_ids.contains(&key.id))
+        .collect();
+    
+    println!("🔍 merge_keys_from_file: Found {} new keys to merge", new_keys.len());
+    
+    // Combine current keys with new keys
+    let merged_keys = [current_keys, new_keys].concat();
+    println!("🔍 merge_keys_from_file: Total keys after merge: {}", merged_keys.len());
+    
+    // Save the merged keys
+    save_keys(&merged_keys)?;
+    println!("🔍 merge_keys_from_file: Saved merged keys");
+    
+    // Update cache
+    let mut cache = KEYS_CACHE.lock().unwrap();
+    *cache = Some(merged_keys.clone());
+    
+    println!("🎉 merge_keys_from_file: Merge completed successfully");
+    Ok(merged_keys)
+} 
+
+#[tauri::command]
+pub fn set_encryption_password(password: String) -> Result<(), String> {
+    println!("🔍 set_encryption_password: Setting password-based encryption");
+    set_password_key(&password);
+    println!("✅ set_encryption_password: Password-based encryption enabled");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn clear_encryption_password() -> Result<(), String> {
+    println!("🔍 clear_encryption_password: Clearing password-based encryption");
+    clear_password_key();
+    println!("✅ clear_encryption_password: Fallback to machine-specific encryption");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn export_keys_with_password(file_path: String, password: String) -> Result<(), String> {
+    println!("🔍 export_keys_with_password: Exporting with password protection");
+    
+    // Get current keys (decrypted from machine-specific encryption)
+    let keys = get_cached_keys()?;
+    println!("🔍 export_keys_with_password: Exporting {} keys", keys.len());
+    
+    // Create parent directory if it doesn't exist
+    let path = PathBuf::from(&file_path);
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+    
+    // Serialize keys to JSON
+    let content = serde_json::to_string_pretty(&keys)
+        .map_err(|e| format!("Failed to serialize keys: {}", e))?;
+    
+    // Encrypt with password-based encryption
+    let password_key = get_password_encryption_key(&password);
+    let cipher = Aes256::new_from_slice(&password_key)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+    
+    let mut rng = rand::thread_rng();
+    let iv: [u8; 16] = rng.gen();
+    
+    // Pad data to 16-byte blocks
+    let mut padded_data = content.as_bytes().to_vec();
+    let padding = 16 - (padded_data.len() % 16);
+    padded_data.extend(std::iter::repeat(padding as u8).take(padding));
+    
+    let mut encrypted = Vec::new();
+    encrypted.extend_from_slice(&iv);
+    
+    for chunk in padded_data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.encrypt_block(&mut block);
+        encrypted.extend_from_slice(block.as_slice());
+    }
+    
+    let encrypted_content = general_purpose::STANDARD.encode(encrypted);
+    
+    // Write encrypted content to file
+    fs::write(&path, encrypted_content)
+        .map_err(|e| format!("Failed to write file: {}", e))?;
+    
+    println!("✅ export_keys_with_password: Successfully exported with password protection");
+    Ok(())
+}
+
+#[tauri::command]
+pub fn import_keys_with_password(file_path: String, password: String) -> Result<ImportResult, String> {
+    println!("🔍 import_keys_with_password: Importing with password protection");
+    
+    // Read encrypted file
+    let encrypted_content = fs::read_to_string(&file_path)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    
+    // Decrypt with password-based encryption
+    let password_key = get_password_encryption_key(&password);
+    let cipher = Aes256::new_from_slice(&password_key)
+        .map_err(|e| format!("Failed to create cipher: {}", e))?;
+    
+    let encrypted_bytes = general_purpose::STANDARD.decode(&encrypted_content)
+        .map_err(|e| format!("Failed to decode base64: {}", e))?;
+    
+    if encrypted_bytes.len() < 16 {
+        return Err("Invalid encrypted data".to_string());
+    }
+    
+    let _iv = &encrypted_bytes[..16];
+    let data = &encrypted_bytes[16..];
+    
+    let mut decrypted = Vec::new();
+    
+    for chunk in data.chunks(16) {
+        let mut block = GenericArray::clone_from_slice(chunk);
+        cipher.decrypt_block(&mut block);
+        decrypted.extend_from_slice(block.as_slice());
+    }
+    
+    // Remove padding
+    if let Some(&padding) = decrypted.last() {
+        if padding <= 16 && padding > 0 {
+            decrypted.truncate(decrypted.len() - padding as usize);
+        }
+    }
+    
+    let decrypted_content = String::from_utf8(decrypted)
+        .map_err(|e| format!("Failed to convert to string: {}", e))?;
+    
+    // Parse keys from JSON
+    let imported_keys: Vec<SshKey> = serde_json::from_str(&decrypted_content)
+        .map_err(|e| format!("Failed to parse keys file: {}", e))?;
+    
+    println!("🔍 import_keys_with_password: Successfully decrypted {} keys", imported_keys.len());
+    
+    // Get current keys to check for duplicates
+    let current_keys = get_cached_keys()?;
+    println!("🔍 import_keys_with_password: Current keys count: {}", current_keys.len());
+    
+    // Create a set of existing key IDs to check for duplicates
+    let existing_ids: std::collections::HashSet<String> = current_keys.iter()
+        .map(|key| key.id.clone())
+        .collect();
+    
+    // Filter out duplicates from imported keys
+    let new_keys: Vec<SshKey> = imported_keys.iter()
+        .filter(|key| !existing_ids.contains(&key.id))
+        .cloned()
+        .collect();
+    
+    let duplicate_count = imported_keys.len() - new_keys.len();
+    println!("🔍 import_keys_with_password: New keys: {}, Duplicates: {}", new_keys.len(), duplicate_count);
+    
+    if new_keys.len() == 0 {
+        // All keys were duplicates - return current keys with duplicate info
+        println!("✅ import_keys_with_password: All {} keys were duplicates", imported_keys.len());
+        return Ok(ImportResult {
+            keys: current_keys.clone(),
+            imported_count: 0,
+            duplicate_count: imported_keys.len(),
+            total_in_store: current_keys.len(),
+        });
+    }
+    
+    // Merge new keys with current keys and save
+    let merged_keys = [current_keys, new_keys.clone()].concat();
+    save_keys(&merged_keys)?;
+    
+    // Update cache
+    let mut cache = KEYS_CACHE.lock().unwrap();
+    *cache = Some(merged_keys.clone());
+    
+    println!("✅ import_keys_with_password: Successfully imported {} new keys ({} duplicates skipped)", new_keys.len(), duplicate_count);
+    
+    Ok(ImportResult {
+        keys: merged_keys.clone(),
+        imported_count: new_keys.len(),
+        duplicate_count,
+        total_in_store: merged_keys.len(),
+    })
+}
+
+#[tauri::command]
+pub fn get_encryption_mode() -> Result<String, String> {
+    if let Ok(password_key) = PASSWORD_KEY.lock() {
+        if password_key.is_some() {
+            Ok("password".to_string())
+        } else {
+            Ok("machine".to_string())
+        }
+    } else {
+        Ok("machine".to_string())
+    }
 } 
